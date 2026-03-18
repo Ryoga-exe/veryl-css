@@ -39,14 +39,15 @@ fn main() -> Result<()> {
         }
     }
 
-    let css = codegen::emit_css(&ir)?;
-    let out_path = output_path(&input);
-    fs::write(&out_path, css)
-        .with_context(|| format!("failed to write {}", out_path.display()))?;
-    eprintln!("wrote {}", out_path.display());
+    let output = codegen::emit(&ir)?;
+    let css_path = css_output_path(&input);
+    fs::write(&css_path, &output.css)
+        .with_context(|| format!("failed to write {}", css_path.display()))?;
+    eprintln!("wrote {}", css_path.display());
+
     Ok(())
 }
 
-fn output_path(input: &Path) -> PathBuf {
+fn css_output_path(input: &Path) -> PathBuf {
     input.with_file_name("output.css")
 }
