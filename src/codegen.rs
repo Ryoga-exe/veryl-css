@@ -13,27 +13,20 @@ pub fn emit(ir: &Ir) -> Result<Output> {
     let modules: Vec<&Module> = ir
         .components
         .iter()
-        .filter_map(|c| {
-            if let Component::Module(m) = c {
-                Some(m)
-            } else {
-                None
-            }
-        })
+        .filter_map(|c| if let Component::Module(m) = c { Some(m) } else { None })
         .collect();
 
-    if modules.len() != 1 {
-        bail!("expected exactly one top module, found {}", modules.len());
+    match modules.as_slice() {
+        [module] => emit_module(module),
+        _ => bail!("expected exactly one top module, found {}", modules.len()),
     }
-
-    emit_module(modules[0])
 }
 
-// ── FF register: the four CSS variable names ──────────────────────────────────
+// ── FF register helper ────────────────────────────────────────────────────────
 
 struct FfRegInfo {
-    current: String,   // --o or --Mod-t  (public name, reading alias)
-    next: String,      // --Mod-o-next    (next-state, unregistered)
+    current: String,   // --o or --Mod-t  (public; read alias)
+    next: String,      // --Mod-o-next    (unregistered; next-state)
     captured: String,  // --Mod-o-captured (unregistered)
     hoist: String,     // --Mod-o-hoist   (unregistered)
 }
@@ -43,7 +36,7 @@ struct FfRegInfo {
 fn emit_module(module: &Module) -> Result<Output> {
     let module_name = module.name.to_string();
 
-    // Step 1: scan declarations to collect FF metadata
+    // Pass 1: collect FF metadata (clock/reset ids, FF-assigned variable ids)
     let mut clock_ids = BTreeSet::<VarId>::new();
     let mut reset_ids = BTreeSet::<VarId>::new();
     let mut ff_assigned_ids = BTreeSet::<VarId>::new();
@@ -60,21 +53,19 @@ fn emit_module(module: &Module) -> Result<Output> {
 
     let has_ff = !clock_ids.is_empty();
 
-    // Step 2: build variable maps.
+    // Pass 2: build variable maps.
     //
-    // Only *public* signals get @property declarations — the same rule as the sandbox:
-    // intermediate animation variables (-hoist, -captured, -next) are intentionally
-    // left unregistered so that CSS treats them as opaque strings and snapshots them
-    // correctly at keyframe boundaries rather than trying to interpolate.
+    // Only *public* signals (ports + internal logic vars) get @property declarations.
+    // Intermediate animation variables (-hoist, -captured, -next) are intentionally
+    // left unregistered: CSS must treat them as opaque strings and snapshot them at
+    // keyframe boundaries rather than interpolating them as typed values.
     let mut names = BTreeMap::<VarId, String>::new();
     let mut ff_regs = BTreeMap::<VarId, FfRegInfo>::new();
-    let mut public_css_vars = BTreeSet::<String>::new(); // for @property
+    let mut public_css_vars = BTreeSet::<String>::new();
 
-    for (id, variable) in &module.variables {
-        let id = *id;
-
+    for (&id, variable) in &module.variables {
         if clock_ids.contains(&id) {
-            continue; // clock ports: no CSS variable
+            continue; // clock ports have no CSS representation
         }
 
         let is_reset = reset_ids.contains(&id);
@@ -83,46 +74,44 @@ fn emit_module(module: &Module) -> Result<Output> {
         }
 
         let Some(css_name) = variable_css_name(variable, &module_name)? else {
-            continue;
+            continue; // Param / Const — excluded from CSS
         };
 
         if ff_assigned_ids.contains(&id) && !is_reset {
             let signal = last_path_segment(&variable.path.to_string())?;
             let base = format!("--{module_name}-{signal}");
-            ff_regs.insert(
-                id,
-                FfRegInfo {
-                    current: css_name.clone(),
-                    next: format!("{base}-next"),
-                    captured: format!("{base}-captured"),
-                    hoist: format!("{base}-hoist"),
-                },
-            );
+            ff_regs.insert(id, FfRegInfo {
+                current: css_name.clone(),
+                next: format!("{base}-next"),
+                captured: format!("{base}-captured"),
+                hoist: format!("{base}-hoist"),
+            });
         }
 
         names.insert(id, css_name.clone());
         public_css_vars.insert(css_name);
     }
 
-    // Step 3: build ff_next_names and process declarations
+    // Pass 3: emit statements into line buffers
     let ff_next_names: BTreeMap<VarId, String> =
         ff_regs.iter().map(|(id, i)| (*id, i.next.clone())).collect();
 
     let mut ff_current_lines = Vec::<String>::new();
     let mut comb_lines = Vec::<String>::new();
     let mut ff_next_lines = Vec::<String>::new();
+    let mut saw_comb = false;
 
     for info in ff_regs.values() {
+        // Public alias reads from the hoisted value; defaults to 0 before first cycle
         ff_current_lines.push(format!("{}: var({}, 0);", info.current, info.hoist));
     }
 
-    let mut saw_comb = false;
     for decl in &module.declarations {
         match decl {
             Declaration::Comb(comb) => {
                 saw_comb = true;
                 for stmt in &comb.statements {
-                    emit_statement(stmt, &names, &mut comb_lines)?;
+                    emit_comb_statement(stmt, &names, &mut comb_lines)?;
                 }
             }
             Declaration::Ff(ff) => {
@@ -139,52 +128,35 @@ fn emit_module(module: &Module) -> Result<Output> {
         bail!("no comb or ff declaration found");
     }
 
-    // Step 4: assemble CSS
+    // Pass 4: assemble CSS output
     let mut css = String::from("/* generated by veryl-css */\n\n");
 
-    // @property only for public signals
     for var in &public_css_vars {
-        css.push_str(&format!(
-            "@property {var} {{\n  syntax: \"<integer>\";\n  inherits: true;\n  initial-value: 0;\n}}\n\n"
-        ));
+        css.push_str(&css_property(var));
     }
 
     if has_ff {
-        // All computation lives on `body` — the same element that the user's clock
-        // animations run on. CSS inheritance is parent→child only; :root cannot read
-        // values that animations write on body, so we must co-locate computation and
-        // animation on the same element.
-        css.push_str("body {\n");
-        for line in ff_current_lines.iter().chain(&comb_lines).chain(&ff_next_lines) {
-            css.push_str(&format!("  {line}\n"));
-        }
-        css.push_str("}\n\n");
+        // Computation lives on `body` — the same element as the user's clock animations.
+        // CSS inheritance is parent→child only; :root cannot read values written by
+        // animations on body, so computation and animation must be on the same element.
+        let body_lines = ff_current_lines.iter()
+            .chain(&comb_lines)
+            .chain(&ff_next_lines);
+        css.push_str(&css_block("body", body_lines));
 
-        // @keyframes for state management.
-        // NOTE: the `body { animation: hoist ...; }` and phase-control rules are NOT
-        // emitted here — that is the clock infrastructure, which belongs in the user's
-        // HTML (index.html). This keeps the generated CSS to pure circuit logic.
-        let mut hoist_body = String::new();
-        let mut capture_body = String::new();
+        // @keyframes for the two-phase FF state transfer.
+        // The `body { animation: hoist ...; }` setup and phase-control rules are NOT
+        // emitted here — they belong in the user's HTML as clock infrastructure.
+        let mut hoist_inner = Vec::<String>::new();
+        let mut capture_inner = Vec::<String>::new();
         for info in ff_regs.values() {
-            hoist_body.push_str(&format!(
-                "    {}: var({}, 0);\n",
-                info.hoist, info.captured
-            ));
-            capture_body.push_str(&format!("    {}: var({});\n", info.captured, info.next));
+            hoist_inner.push(format!("{}: var({}, 0);", info.hoist, info.captured));
+            capture_inner.push(format!("{}: var({});", info.captured, info.next));
         }
-        css.push_str(&format!(
-            "@keyframes hoist {{\n  0%, 100% {{\n{hoist_body}  }}\n}}\n\n"
-        ));
-        css.push_str(&format!(
-            "@keyframes capture {{\n  0%, 100% {{\n{capture_body}  }}\n}}\n\n"
-        ));
+        css.push_str(&css_keyframes("hoist", &hoist_inner));
+        css.push_str(&css_keyframes("capture", &capture_inner));
     } else {
-        css.push_str(":root {\n");
-        for line in &comb_lines {
-            css.push_str(&format!("  {line}\n"));
-        }
-        css.push_str("}\n");
+        css.push_str(&css_block(":root", &comb_lines));
     }
 
     Ok(Output { css })
@@ -192,14 +164,12 @@ fn emit_module(module: &Module) -> Result<Output> {
 
 // ── FF helpers ────────────────────────────────────────────────────────────────
 
+/// Collect all variable ids that appear on the left-hand side of assignments
+/// anywhere within the given statement list (recursing into if/if_reset branches).
 fn collect_assigned_ids(statements: &[Statement], ids: &mut BTreeSet<VarId>) {
     for stmt in statements {
         match stmt {
-            Statement::Assign(a) => {
-                for dst in &a.dst {
-                    ids.insert(dst.id);
-                }
-            }
+            Statement::Assign(a) => ids.extend(a.dst.iter().map(|d| d.id)),
             Statement::If(s) => {
                 collect_assigned_ids(&s.true_side, ids);
                 collect_assigned_ids(&s.false_side, ids);
@@ -221,16 +191,11 @@ fn emit_ff_statement(
 ) -> Result<()> {
     match statement {
         Statement::Assign(assign) => {
-            if assign.dst.len() != 1 {
-                bail!("only single-destination assignments are supported");
-            }
-            let dst = &assign.dst[0];
-            ensure_simple_dst(dst)?;
-            let next_name = ff_next_names
+            let (dst, expr) = unpack_assign_expr(assign, names)?;
+            let next = ff_next_names
                 .get(&dst.id)
                 .ok_or_else(|| anyhow!("ff assignment to non-ff variable: {}", dst.id))?;
-            let expr = emit_expr(&assign.expr, names)?;
-            out.push(format!("{next_name}: {expr};"));
+            out.push(format!("{next}: {expr};"));
             Ok(())
         }
         Statement::IfReset(if_reset) => emit_if_reset(if_reset, names, ff_next_names, out),
@@ -245,59 +210,40 @@ fn emit_if_reset(
     ff_next_names: &BTreeMap<VarId, String>,
     out: &mut Vec<String>,
 ) -> Result<()> {
-    let mut reset_exprs = BTreeMap::<VarId, String>::new();
-    for stmt in &if_reset.true_side {
-        if let Statement::Assign(a) = stmt
-            && a.dst.len() == 1
-        {
-            reset_exprs.insert(a.dst[0].id, emit_expr(&a.expr, names)?);
-        }
-    }
-
-    let mut normal_exprs = BTreeMap::<VarId, String>::new();
-    for stmt in &if_reset.false_side {
-        if let Statement::Assign(a) = stmt
-            && a.dst.len() == 1
-        {
-            normal_exprs.insert(a.dst[0].id, emit_expr(&a.expr, names)?);
-        }
-    }
+    // Gather reset-branch and normal-branch expressions, keyed by destination id
+    let reset_exprs = collect_assign_exprs(&if_reset.true_side, names)?;
+    let normal_exprs = collect_assign_exprs(&if_reset.false_side, names)?;
 
     for (id, reset_val) in &reset_exprs {
-        let next_name = ff_next_names
+        let next = ff_next_names
             .get(id)
             .ok_or_else(|| anyhow!("if_reset assigns to non-ff variable: {id}"))?;
 
-        if let Some(normal_val) = normal_exprs.get(id) {
-            out.push(format!(
-                "{next_name}: if(style(--rst: 1): {reset_val}; else: {normal_val});"
-            ));
-        } else {
-            out.push(format!("{next_name}: {reset_val};"));
-        }
+        let line = match normal_exprs.get(id) {
+            Some(normal_val) =>
+                format!("{next}: if(style(--rst: 1): {reset_val}; else: {normal_val});"),
+            None =>
+                format!("{next}: {reset_val};"),
+        };
+        out.push(line);
     }
 
     Ok(())
 }
 
-// ── always_comb statement / expression emitters ───────────────────────────────
+// ── always_comb statement emitter ─────────────────────────────────────────────
 
-fn emit_statement(
+fn emit_comb_statement(
     statement: &Statement,
     names: &BTreeMap<VarId, String>,
     out: &mut Vec<String>,
 ) -> Result<()> {
     match statement {
         Statement::Assign(assign) => {
-            if assign.dst.len() != 1 {
-                bail!("only single-destination assignments are supported");
-            }
-            let dst = &assign.dst[0];
-            ensure_simple_dst(dst)?;
+            let (dst, expr) = unpack_assign_expr(assign, names)?;
             let dst_name = names
                 .get(&dst.id)
                 .ok_or_else(|| anyhow!("unknown assignment destination: {}", dst.id))?;
-            let expr = emit_expr(&assign.expr, names)?;
             out.push(format!("{dst_name}: {expr};"));
             Ok(())
         }
@@ -305,6 +251,8 @@ fn emit_statement(
         other => bail!("unsupported statement: {other}"),
     }
 }
+
+// ── Expression emitters ───────────────────────────────────────────────────────
 
 fn emit_expr(expr: &Expression, names: &BTreeMap<VarId, String>) -> Result<String> {
     match expr {
@@ -344,6 +292,7 @@ fn emit_factor(factor: &Factor, names: &BTreeMap<VarId, String>) -> Result<Strin
             let value = comptime
                 .get_value()
                 .map_err(|_| anyhow!("failed to evaluate literal value"))?;
+            // LowerHex on Value emits full Veryl literal format: e.g. "32'sh00000001"
             literal_to_css_int(&format!("{value:x}"))
         }
         other => bail!("unsupported factor: {other}"),
@@ -361,6 +310,64 @@ fn emit_binary(op: &Op, lhs: &str, rhs: &str) -> Result<String> {
     })
 }
 
+// ── Small reusable helpers ────────────────────────────────────────────────────
+
+/// Extract (dst, emitted_expr) from a single-destination assign, or bail.
+fn unpack_assign_expr<'a>(
+    assign: &'a veryl_analyzer::ir::AssignStatement,
+    names: &BTreeMap<VarId, String>,
+) -> Result<(&'a AssignDestination, String)> {
+    if assign.dst.len() != 1 {
+        bail!("only single-destination assignments are supported");
+    }
+    let dst = &assign.dst[0];
+    if dst.index.dimension() != 0 {
+        bail!("array destination is unsupported");
+    }
+    if !dst.select.to_string().is_empty() {
+        bail!("bit/part-select destination is unsupported");
+    }
+    let expr = emit_expr(&assign.expr, names)?;
+    Ok((dst, expr))
+}
+
+/// Collect `{ var_id → emitted_expr }` from a list of assign statements.
+fn collect_assign_exprs(
+    stmts: &[Statement],
+    names: &BTreeMap<VarId, String>,
+) -> Result<BTreeMap<VarId, String>> {
+    let mut map = BTreeMap::new();
+    for stmt in stmts {
+        if let Statement::Assign(a) = stmt {
+            let (dst, expr) = unpack_assign_expr(a, names)?;
+            map.insert(dst.id, expr);
+        }
+    }
+    Ok(map)
+}
+
+// ── CSS output helpers ────────────────────────────────────────────────────────
+
+fn css_property(var: &str) -> String {
+    format!(
+        "@property {var} {{\n  syntax: \"<integer>\";\n  inherits: true;\n  initial-value: 0;\n}}\n\n"
+    )
+}
+
+fn css_block<'a>(selector: &str, lines: impl IntoIterator<Item = &'a String>) -> String {
+    let mut s = format!("{selector} {{\n");
+    for line in lines {
+        s.push_str(&format!("  {line}\n"));
+    }
+    s.push_str("}\n\n");
+    s
+}
+
+fn css_keyframes(name: &str, lines: &[String]) -> String {
+    let inner = lines.iter().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n");
+    format!("@keyframes {name} {{\n  0%, 100% {{\n{inner}\n  }}\n}}\n\n")
+}
+
 // ── Variable helpers ──────────────────────────────────────────────────────────
 
 fn variable_css_name(variable: &Variable, module_name: &str) -> Result<Option<String>> {
@@ -370,16 +377,6 @@ fn variable_css_name(variable: &Variable, module_name: &str) -> Result<Option<St
         VarKind::Variable | VarKind::Let => Some(format!("--{module_name}-{signal}")),
         VarKind::Param | VarKind::Const => None,
     })
-}
-
-fn ensure_simple_dst(dst: &AssignDestination) -> Result<()> {
-    if dst.index.dimension() != 0 {
-        bail!("array destination is unsupported");
-    }
-    if !dst.select.to_string().is_empty() {
-        bail!("bit/part-select destination is unsupported");
-    }
-    Ok(())
 }
 
 fn ensure_i32_like(variable: &Variable) -> Result<()> {
@@ -402,36 +399,58 @@ fn last_path_segment(path: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("empty path"))
 }
 
+/// Parse a Veryl literal or plain decimal/signed integer string into a CSS integer string.
+///
+/// Accepts:
+/// - Plain decimal: `"42"`, `"-1"`
+/// - Veryl literal: `"32'sh00000001"`, `"8'b10101010"`, etc.
+///
+/// Rejects 4-value logic (x/z) literals.
 fn literal_to_css_int(text: &str) -> Result<String> {
     let normalized = text.trim().replace('_', "");
     let lower = normalized.to_ascii_lowercase();
 
     if lower.contains('x') || lower.contains('z') {
-        bail!("x/z containing literal is unsupported: {text}");
+        bail!("x/z literal is unsupported: {text}");
     }
 
-    if let Some((_, rhs)) = lower.split_once('\'') {
-        let Some((signed_and_base, digits)) = rhs.split_at_checked(1) else {
-            bail!("unsupported literal: {text}");
+    if let Some((width_str, rhs)) = lower.split_once('\'') {
+        // Veryl literal: [width]'[s]<base><digits>
+        let signed = rhs.starts_with('s');
+        let rest = if signed { &rhs[1..] } else { rhs };
+        let base_ch = rest.chars().next().unwrap_or_default();
+        let digits = &rest[1..];
+        let width: Option<u32> = width_str.parse().ok();
+
+        // Parse as unsigned first, then sign-extend if the literal is signed
+        let unsigned_val: u128 = match base_ch {
+            'h' => u128::from_str_radix(digits, 16)?,
+            'd' => digits.parse()?,
+            'b' => u128::from_str_radix(digits, 2)?,
+            'o' => u128::from_str_radix(digits, 8)?,
+            _ => bail!("unsupported literal base in: {text}"),
         };
-        let (base_ch, digits) = if signed_and_base == "s" {
-            let Some((base, digits)) = digits.split_at_checked(1) else {
-                bail!("unsupported literal: {text}");
-            };
-            (base.chars().next().unwrap(), digits)
+
+        let value: i128 = if signed {
+            // Sign-extend: if the MSB within `width` bits is 1, the value is negative
+            if let Some(w) = width.filter(|&w| w > 0 && w <= 128) {
+                let msb = (unsigned_val >> (w - 1)) & 1;
+                if msb == 1 {
+                    (unsigned_val | (u128::MAX << w)) as i128
+                } else {
+                    unsigned_val as i128
+                }
+            } else {
+                unsigned_val as i128
+            }
         } else {
-            (signed_and_base.chars().next().unwrap(), digits)
+            unsigned_val as i128
         };
-        let value = match base_ch {
-            'h' => i128::from_str_radix(digits, 16)?,
-            'd' => digits.parse::<i128>()?,
-            'b' => i128::from_str_radix(digits, 2)?,
-            'o' => i128::from_str_radix(digits, 8)?,
-            _ => bail!("unsupported literal base in {text}"),
-        };
+
         return Ok(value.to_string());
     }
 
+    // Plain decimal (possibly negative)
     if lower.starts_with('-') || lower.chars().all(|c| c.is_ascii_digit()) {
         return Ok(lower);
     }
