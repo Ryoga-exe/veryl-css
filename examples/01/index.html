@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title></title>
+    <link href="output.css" rel="stylesheet" />
+    <style>
+      :root {
+        --a: 1;
+        --b: 2;
+        --c: 3;
+      }
+      .sum::after {
+        counter-reset: val var(--sum);
+        content: counter(val);
+      }
+      .div::after {
+        counter-reset: val var(--div);
+        content: counter(val);
+      }
+      .rem::after {
+        counter-reset: val var(--rem);
+        content: counter(val);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sum"></div>
+    <div class="div"></div>
+    <div class="rem"></div>
+  </body>
+</html>

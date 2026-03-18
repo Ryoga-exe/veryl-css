@@ -1,0 +1,19 @@
+module Top (
+    a  : input  i32,
+    b  : input  i32,
+    c  : input  i32,
+    sum: output i32,
+    div: output i32,
+    rem: output i32,
+) {
+    var t0: i32;
+    var t1: i32;
+
+    always_comb {
+        t0 = a + b;
+        t1 = t0 * c;
+        sum = t1 - 5;
+        div = t1 / 3;
+        rem = t1 % 7;
+    }
+}
