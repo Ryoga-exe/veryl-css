@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Counter (always_ff)</title>
+    <link href="output.css" rel="stylesheet" />
+    <style>
+      /* Clock infrastructure (CPU Hack) */
+      body {
+        animation: hoist 1ms infinite, capture 1ms infinite;
+        animation-play-state: paused, paused;
+      }
+      body:has(.phase-0:hover) { animation-play-state: paused, running; }
+      body:has(.phase-1:hover) { animation-play-state: paused, paused; }
+      body:has(.phase-2:hover) { animation-play-state: running, paused; }
+      body:has(.phase-3:hover) { animation-play-state: paused, paused; }
+      body:has(#rst:checked)   { --rst: 1; }
+
+      /* Phase elements */
+      ol { position: relative; list-style: none; margin: 0; padding: 0; height: 1.5em; }
+      ol > li { position: absolute; inset: 0; width: 0; overflow: hidden; cursor: pointer; }
+      ol > .phase-0 { width: 100%; }
+      ol > .phase-0:hover ~ .phase-1,
+      ol > .phase-1:hover ~ .phase-2,
+      ol > .phase-2:hover ~ .phase-3 { width: 100%; }
+
+      /* Display */
+      #out::before {
+        counter-reset: o var(--o);
+        content: "o = " counter(o);
+      }
+    </style>
+  </head>
+  <body>
+    <label><input type="checkbox" id="rst" /> rst</label>
+    <p id="out"></p>
+    <ol>
+      <li class="phase-0">clk ↑ (0)</li>
+      <li class="phase-1">clk ↑ (1)</li>
+      <li class="phase-2">clk ↑ (2)</li>
+      <li class="phase-3">clk ↑ (3)</li>
+    </ol>
+  </body>
+</html>

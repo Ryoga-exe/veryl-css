@@ -1,0 +1,13 @@
+module Counter (
+    clk: input clock,
+    rst: input reset,
+    o  : output i32,
+) {
+    always_ff {
+        if_reset {
+            o = 0;
+        } else {
+            o = o + 1;
+        }
+    }
+}
