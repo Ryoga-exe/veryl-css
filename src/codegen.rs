@@ -498,13 +498,26 @@ fn emit_factor(factor: &Factor, ctx: &mut Ctx) -> Result<(String, Option<TypeInf
             if index.dimension() != 0 {
                 bail!("array indexing is unsupported");
             }
-            if !select.to_string().is_empty() {
-                bail!("bit/part-select is unsupported");
-            }
             let css_name = ctx
                 .names
                 .get(id)
                 .ok_or_else(|| anyhow!("unknown variable id: {id}"))?;
+            if !select.is_empty() {
+                if select.is_range() || select.dimension() != 1 {
+                    bail!("only single bit-select is supported (e.g., x[0])");
+                }
+                let x_css = format!("var({css_name})");
+                let idx_expr = &select.0[0];
+                let result = match const_bit_divisor(idx_expr) {
+                    Some(1) => format!("mod({x_css}, 2)"),
+                    Some(d) => format!("mod(round(down, {x_css} / {d}), 2)"),
+                    None => {
+                        let (idx_css, _) = emit_expr(idx_expr, ctx)?;
+                        format!("mod(round(down, {x_css} / pow(2, {idx_css})), 2)")
+                    }
+                };
+                return Ok((result, None));
+            }
             let ti = ctx.types.get(id).copied();
             Ok((format!("var({css_name})"), ti))
         }
@@ -745,6 +758,20 @@ fn parse_type_info(variable: &Variable) -> Result<TypeInfo> {
             variable.path
         ),
     }
+}
+
+// For a constant bit-index expression, return 2^i as the divisor (1 if i==0).
+// Returns None if the index is not a compile-time integer literal.
+fn const_bit_divisor(expr: &Expression) -> Option<u64> {
+    if let Expression::Term(factor) = expr {
+        if let Factor::Value(comptime) = factor.as_ref() {
+            let val = comptime.get_value().ok()?;
+            let s = literal_to_css_int(&format!("{val:x}")).ok()?;
+            let i: u32 = s.parse().ok()?;
+            return Some(1u64 << i);
+        }
+    }
+    None
 }
 
 fn last_path_segment(path: &str) -> Result<String> {
