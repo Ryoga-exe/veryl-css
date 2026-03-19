@@ -137,6 +137,9 @@ fn emit_module(module: &Module) -> Result<Output> {
     if !ctx.used_comp_fns.is_empty() {
         css.push_str(&css_comp_functions(&ctx.used_comp_fns));
     }
+    for n in 0..ctx.cond_counter {
+        css.push_str(&css_property(&format!("--veryl-cond-{n}")));
+    }
     for var in &public_css_vars {
         css.push_str(&css_property(var));
     }

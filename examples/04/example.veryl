@@ -1,0 +1,14 @@
+module InRange (
+    x  : input  i32,
+    lo : input  i32,
+    hi : input  i32,
+    out: output i32,
+) {
+    always_comb {
+        if x >= lo && x <= hi {
+            out = 1;
+        } else {
+            out = 0;
+        }
+    }
+}
