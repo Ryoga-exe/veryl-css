@@ -78,7 +78,7 @@ fn emit_module(module: &Module) -> Result<Output> {
         }
         let is_reset = reset_ids.contains(&id);
         if !is_reset {
-            ensure_i32_like(variable)?;
+            ensure_supported_int_type(variable)?;
         }
         let Some(css_name) = variable_css_name(variable, &module_name)? else {
             continue;
@@ -469,13 +469,20 @@ fn variable_css_name(variable: &Variable, module_name: &str) -> Result<Option<St
     })
 }
 
-fn ensure_i32_like(variable: &Variable) -> Result<()> {
+fn ensure_supported_int_type(variable: &Variable) -> Result<()> {
     let ty = variable.r#type.to_string();
-    if ty == "signed bit<32>" {
+    const SUPPORTED: &[&str] = &[
+        "signed bit<8>",
+        "signed bit<16>",
+        "signed bit<32>",
+        "bit<8>",
+        "bit<16>",
+    ];
+    if SUPPORTED.contains(&ty.as_str()) {
         Ok(())
     } else {
         bail!(
-            "only `signed bit<32>` variables are supported, got `{}` for `{}`",
+            "unsupported type `{}` for `{}`; supported: i8, i16, i32, u8, u16",
             ty,
             variable.path
         )
