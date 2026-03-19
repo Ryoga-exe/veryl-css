@@ -318,9 +318,16 @@ fn emit_comb_statement(
 
 fn emit_condition(expr: &Expression, ctx: &mut Ctx) -> Result<String> {
     match expr {
+        Expression::Unary(Op::LogicNot, inner, _) => {
+            Ok(format!("calc(1 - ({}))", emit_condition(inner, ctx)?))
+        }
+        Expression::Binary(lhs, Op::LogicAnd, rhs, _) => {
+            Ok(format!("min({}, {})", emit_condition(lhs, ctx)?, emit_condition(rhs, ctx)?))
+        }
+        Expression::Binary(lhs, Op::LogicOr, rhs, _) => {
+            Ok(format!("max({}, {})", emit_condition(lhs, ctx)?, emit_condition(rhs, ctx)?))
+        }
         Expression::Binary(lhs, op, rhs, _) => {
-            let l = emit_expr(lhs, ctx.names)?;
-            let r = emit_expr(rhs, ctx.names)?;
             let (fn_name, comp) = match op {
                 Op::Less      => ("--veryl-lt",  CompFn::Lt),
                 Op::LessEq    => ("--veryl-lte", CompFn::Lte),
@@ -331,7 +338,7 @@ fn emit_condition(expr: &Expression, ctx: &mut Ctx) -> Result<String> {
                 _ => bail!("unsupported condition operator: {op}"),
             };
             ctx.used_comp_fns.insert(comp);
-            Ok(format!("{fn_name}({l}, {r})"))
+            Ok(format!("{fn_name}({}, {})", emit_expr(lhs, ctx.names)?, emit_expr(rhs, ctx.names)?))
         }
         other => bail!("unsupported condition expression: {other}"),
     }
