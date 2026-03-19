@@ -28,15 +28,29 @@ struct FfRegInfo {
     hoist: String,
 }
 
+#[derive(Clone, Copy)]
+struct TypeInfo {
+    width: u32,
+    signed: bool,
+}
+
 struct Ctx<'a> {
     names: &'a BTreeMap<VarId, String>,
+    types: &'a BTreeMap<VarId, TypeInfo>,
     cond_counter: usize,
     used_comp_fns: BTreeSet<CompFn>,
+    used_bit_fns: BTreeSet<BitFn>,
 }
 
 impl<'a> Ctx<'a> {
-    fn new(names: &'a BTreeMap<VarId, String>) -> Self {
-        Self { names, cond_counter: 0, used_comp_fns: BTreeSet::new() }
+    fn new(names: &'a BTreeMap<VarId, String>, types: &'a BTreeMap<VarId, TypeInfo>) -> Self {
+        Self {
+            names,
+            types,
+            cond_counter: 0,
+            used_comp_fns: BTreeSet::new(),
+            used_bit_fns: BTreeSet::new(),
+        }
     }
 
     fn next_cond_var(&mut self) -> String {
@@ -48,6 +62,9 @@ impl<'a> Ctx<'a> {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum CompFn { Lt, Lte, Gt, Gte, Eq, Neq }
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum BitFn { And8, And16, Or8, Or16, Xor8, Xor16, Not8, Not16, Shl8, Shl16, Shr8, Shr16 }
 
 fn emit_module(module: &Module) -> Result<Output> {
     let module_name = module.name.to_string();
@@ -69,6 +86,7 @@ fn emit_module(module: &Module) -> Result<Output> {
     let has_ff = !clock_ids.is_empty();
 
     let mut names = BTreeMap::<VarId, String>::new();
+    let mut types = BTreeMap::<VarId, TypeInfo>::new();
     let mut ff_regs = BTreeMap::<VarId, FfRegInfo>::new();
     let mut public_css_vars = BTreeSet::<String>::new();
 
@@ -78,7 +96,8 @@ fn emit_module(module: &Module) -> Result<Output> {
         }
         let is_reset = reset_ids.contains(&id);
         if !is_reset {
-            ensure_supported_int_type(variable)?;
+            let ti = parse_type_info(variable)?;
+            types.insert(id, ti);
         }
         let Some(css_name) = variable_css_name(variable, &module_name)? else {
             continue;
@@ -100,7 +119,7 @@ fn emit_module(module: &Module) -> Result<Output> {
     let ff_next_names: BTreeMap<VarId, String> =
         ff_regs.iter().map(|(id, i)| (*id, i.next.clone())).collect();
 
-    let mut ctx = Ctx::new(&names);
+    let mut ctx = Ctx::new(&names, &types);
     let mut ff_current_lines = Vec::<String>::new();
     let mut comb_lines = Vec::<String>::new();
     let mut ff_next_lines = Vec::<String>::new();
@@ -136,6 +155,9 @@ fn emit_module(module: &Module) -> Result<Output> {
 
     if !ctx.used_comp_fns.is_empty() {
         css.push_str(&css_comp_functions(&ctx.used_comp_fns));
+    }
+    if !ctx.used_bit_fns.is_empty() {
+        css.push_str(&css_bit_functions(&ctx.used_bit_fns));
     }
     for n in 0..ctx.cond_counter {
         css.push_str(&css_property(&format!("--veryl-cond-{n}")));
@@ -188,7 +210,7 @@ fn emit_ff_statement(
 ) -> Result<()> {
     match statement {
         Statement::Assign(assign) => {
-            let (dst, expr) = unpack_assign_expr(assign, ctx.names)?;
+            let (dst, expr) = unpack_assign_expr(assign, ctx)?;
             let next = ff_next_names
                 .get(&dst.id)
                 .ok_or_else(|| anyhow!("ff assignment to non-ff variable: {}", dst.id))?;
@@ -242,9 +264,6 @@ fn emit_if_reset(
     Ok(())
 }
 
-// Recursively evaluate a statement list into { VarId → CSS value expression }.
-// Nested `if` statements are inlined as CSS if() calls.
-// Condition temp vars are appended to `preamble` in evaluation order.
 fn eval_branch(
     stmts: &[Statement],
     ctx: &mut Ctx,
@@ -254,7 +273,7 @@ fn eval_branch(
     for stmt in stmts {
         match stmt {
             Statement::Assign(a) => {
-                let (dst, expr) = unpack_assign_expr(a, ctx.names)?;
+                let (dst, expr) = unpack_assign_expr(a, ctx)?;
                 map.insert(dst.id, expr);
             }
             Statement::If(if_stmt) => map.extend(eval_if_expr(if_stmt, ctx, preamble)?),
@@ -271,7 +290,8 @@ fn eval_if_expr(
     preamble: &mut Vec<String>,
 ) -> Result<BTreeMap<VarId, String>> {
     let cond_var = ctx.next_cond_var();
-    preamble.push(format!("{cond_var}: {};", emit_condition(&if_stmt.cond, ctx)?));
+    let cond_str = emit_condition(&if_stmt.cond, ctx)?;
+    preamble.push(format!("{cond_var}: {cond_str};"));
 
     let true_exprs = eval_branch(&if_stmt.true_side, ctx, preamble)?;
     let false_exprs = eval_branch(&if_stmt.false_side, ctx, preamble)?;
@@ -295,7 +315,7 @@ fn emit_comb_statement(
 ) -> Result<()> {
     match statement {
         Statement::Assign(assign) => {
-            let (dst, expr) = unpack_assign_expr(assign, ctx.names)?;
+            let (dst, expr) = unpack_assign_expr(assign, ctx)?;
             let dst_name = ctx.names
                 .get(&dst.id)
                 .ok_or_else(|| anyhow!("unknown assignment destination: {}", dst.id))?;
@@ -341,33 +361,89 @@ fn emit_condition(expr: &Expression, ctx: &mut Ctx) -> Result<String> {
                 _ => bail!("unsupported condition operator: {op}"),
             };
             ctx.used_comp_fns.insert(comp);
-            Ok(format!("{fn_name}({}, {})", emit_expr(lhs, ctx.names)?, emit_expr(rhs, ctx.names)?))
+            let (lhs_css, _) = emit_expr(lhs, ctx)?;
+            let (rhs_css, _) = emit_expr(rhs, ctx)?;
+            Ok(format!("{fn_name}({lhs_css}, {rhs_css})"))
         }
         other => bail!("unsupported condition expression: {other}"),
     }
 }
 
-fn emit_expr(expr: &Expression, names: &BTreeMap<VarId, String>) -> Result<String> {
+fn emit_expr(expr: &Expression, ctx: &mut Ctx) -> Result<(String, Option<TypeInfo>)> {
     match expr {
-        Expression::Term(factor) => emit_factor(factor, names),
+        Expression::Term(factor) => emit_factor(factor, ctx),
         Expression::Unary(op, inner, _) => {
-            let inner = emit_expr(inner, names)?;
+            let (inner_css, inner_type) = emit_expr(inner, ctx)?;
             match op {
-                Op::Add => Ok(inner),
-                Op::Sub => Ok(format!("calc(-1 * ({inner}))")),
+                Op::Add => Ok((inner_css, inner_type)),
+                Op::Sub => Ok((format!("calc(-1 * ({inner_css}))"), inner_type)),
+                Op::BitNot => {
+                    let ti = inner_type
+                        .ok_or_else(|| anyhow!("cannot determine type width for bitwise NOT"))?;
+                    if ti.signed {
+                        bail!("bitwise NOT is only supported for unsigned types (u8, u16)");
+                    }
+                    let (fn_name, bit_fn) = match ti.width {
+                        8  => ("--veryl-bnot8",  BitFn::Not8),
+                        16 => ("--veryl-bnot16", BitFn::Not16),
+                        w  => bail!("bitwise NOT unsupported for {w}-bit type"),
+                    };
+                    ctx.used_bit_fns.insert(bit_fn);
+                    Ok((format!("{fn_name}({inner_css})"), Some(ti)))
+                }
                 _ => bail!("unsupported unary operator: {op}"),
             }
         }
         Expression::Binary(lhs, op, rhs, _) => {
-            let lhs = emit_expr(lhs, names)?;
-            let rhs = emit_expr(rhs, names)?;
-            emit_binary(op, &lhs, &rhs)
+            let (lhs_css, lhs_type) = emit_expr(lhs, ctx)?;
+            let (rhs_css, rhs_type) = emit_expr(rhs, ctx)?;
+            let result_type = lhs_type.or(rhs_type);
+            match op {
+                Op::BitAnd | Op::BitOr | Op::BitXor => {
+                    let ti = result_type
+                        .ok_or_else(|| anyhow!("cannot determine type width for bitwise op"))?;
+                    if ti.signed {
+                        bail!("bitwise AND/OR/XOR is only supported for unsigned types (u8, u16)");
+                    }
+                    let (fn_name, bit_fn) = match (op, ti.width) {
+                        (Op::BitAnd, 8)  => ("--veryl-band8",  BitFn::And8),
+                        (Op::BitAnd, 16) => ("--veryl-band16", BitFn::And16),
+                        (Op::BitOr,  8)  => ("--veryl-bor8",   BitFn::Or8),
+                        (Op::BitOr,  16) => ("--veryl-bor16",  BitFn::Or16),
+                        (Op::BitXor, 8)  => ("--veryl-bxor8",  BitFn::Xor8),
+                        (Op::BitXor, 16) => ("--veryl-bxor16", BitFn::Xor16),
+                        (_, w) => bail!("bitwise op unsupported for {w}-bit type"),
+                    };
+                    ctx.used_bit_fns.insert(bit_fn);
+                    Ok((format!("{fn_name}({lhs_css}, {rhs_css})"), Some(ti)))
+                }
+                Op::LogicShiftL | Op::LogicShiftR => {
+                    let ti = result_type
+                        .ok_or_else(|| anyhow!("cannot determine type width for shift"))?;
+                    if ti.signed {
+                        bail!("logical shifts are only supported for unsigned types (u8, u16)");
+                    }
+                    let (fn_name, bit_fn) = match (op, ti.width) {
+                        (Op::LogicShiftL, 8)  => ("--veryl-bshl8",  BitFn::Shl8),
+                        (Op::LogicShiftL, 16) => ("--veryl-bshl16", BitFn::Shl16),
+                        (Op::LogicShiftR, 8)  => ("--veryl-bshr8",  BitFn::Shr8),
+                        (Op::LogicShiftR, 16) => ("--veryl-bshr16", BitFn::Shr16),
+                        (_, w) => bail!("shift unsupported for {w}-bit type"),
+                    };
+                    ctx.used_bit_fns.insert(bit_fn);
+                    Ok((format!("{fn_name}({lhs_css}, {rhs_css})"), Some(ti)))
+                }
+                _ => {
+                    let css = emit_binary(op, &lhs_css, &rhs_css)?;
+                    Ok((css, result_type))
+                }
+            }
         }
         other => bail!("unsupported expression: {other}"),
     }
 }
 
-fn emit_factor(factor: &Factor, names: &BTreeMap<VarId, String>) -> Result<String> {
+fn emit_factor(factor: &Factor, ctx: &mut Ctx) -> Result<(String, Option<TypeInfo>)> {
     match factor {
         Factor::Variable(id, index, select, _) => {
             if index.dimension() != 0 {
@@ -376,17 +452,19 @@ fn emit_factor(factor: &Factor, names: &BTreeMap<VarId, String>) -> Result<Strin
             if !select.to_string().is_empty() {
                 bail!("bit/part-select is unsupported");
             }
-            let css_name = names
+            let css_name = ctx.names
                 .get(id)
                 .ok_or_else(|| anyhow!("unknown variable id: {id}"))?;
-            Ok(format!("var({css_name})"))
+            let ti = ctx.types.get(id).copied();
+            Ok((format!("var({css_name})"), ti))
         }
         Factor::Value(comptime) => {
             let value = comptime
                 .get_value()
                 .map_err(|_| anyhow!("failed to evaluate literal value"))?;
             // LowerHex on Value produces Veryl literal format e.g. "32'sh00000001"
-            literal_to_css_int(&format!("{value:x}"))
+            let css = literal_to_css_int(&format!("{value:x}"))?;
+            Ok((css, None))
         }
         other => bail!("unsupported factor: {other}"),
     }
@@ -405,7 +483,7 @@ fn emit_binary(op: &Op, lhs: &str, rhs: &str) -> Result<String> {
 
 fn unpack_assign_expr<'a>(
     assign: &'a AssignStatement,
-    names: &BTreeMap<VarId, String>,
+    ctx: &mut Ctx,
 ) -> Result<(&'a AssignDestination, String)> {
     if assign.dst.len() != 1 {
         bail!("only single-destination assignments are supported");
@@ -417,7 +495,8 @@ fn unpack_assign_expr<'a>(
     if !dst.select.to_string().is_empty() {
         bail!("bit/part-select destination is unsupported");
     }
-    Ok((dst, emit_expr(&assign.expr, names)?))
+    let (css, _) = emit_expr(&assign.expr, ctx)?;
+    Ok((dst, css))
 }
 
 fn css_comp_functions(used: &BTreeSet<CompFn>) -> String {
@@ -438,6 +517,94 @@ fn css_comp_functions(used: &BTreeSet<CompFn>) -> String {
         }
     }
     s
+}
+
+fn css_bit_functions(used: &BTreeSet<BitFn>) -> String {
+    let all: &[(BitFn, u32, &str)] = &[
+        (BitFn::And8,  8,  "and"),
+        (BitFn::And16, 16, "and"),
+        (BitFn::Or8,   8,  "or"),
+        (BitFn::Or16,  16, "or"),
+        (BitFn::Xor8,  8,  "xor"),
+        (BitFn::Xor16, 16, "xor"),
+        (BitFn::Not8,  8,  "not"),
+        (BitFn::Not16, 16, "not"),
+        (BitFn::Shl8,  8,  "shl"),
+        (BitFn::Shl16, 16, "shl"),
+        (BitFn::Shr8,  8,  "shr"),
+        (BitFn::Shr16, 16, "shr"),
+    ];
+    let mut s = String::new();
+    for &(tag, bits, op) in all {
+        if used.contains(&tag) {
+            s.push_str(&css_bit_function_body(bits, op));
+        }
+    }
+    s
+}
+
+fn css_bit_function_body(bits: u32, op: &str) -> String {
+    let suffix = bits;
+    match op {
+        "not" => {
+            let max_val = (1u64 << bits) - 1;
+            format!(
+                "@function --veryl-bnot{suffix}(--a <integer>) returns <integer> {{\n  result: calc({max_val} - var(--a));\n}}\n\n"
+            )
+        }
+        "shr" => {
+            format!(
+                "@function --veryl-bshr{suffix}(--a <integer>, --b <integer>) returns <integer> {{\n  result: round(down, var(--a) / pow(2, var(--b)));\n}}\n\n"
+            )
+        }
+        "shl" => {
+            let entries: String = (0..bits)
+                .map(|i| format!("style(--b:{}):{}; ", i, 1u64 << i))
+                .collect();
+            let max_val = 1u64 << bits;
+            format!(
+                "@function --veryl-bshl{suffix}(--a <integer>, --b <integer>) returns <integer> {{\n  --shift: if({entries}else:1);\n  result: mod(calc(var(--a) * var(--shift)), {max_val});\n}}\n\n"
+            )
+        }
+        _ => {
+            // "and", "or", "xor": bit decomposition
+            let mut body = String::new();
+            for i in 0..bits {
+                let extract = if i == 0 {
+                    "mod(var(--a), 2)".to_string()
+                } else {
+                    format!("mod(round(down, var(--a) / {}), 2)", 1u64 << i)
+                };
+                body.push_str(&format!("  --a{}: {extract};\n", i + 1));
+            }
+            for i in 0..bits {
+                let extract = if i == 0 {
+                    "mod(var(--b), 2)".to_string()
+                } else {
+                    format!("mod(round(down, var(--b) / {}), 2)", 1u64 << i)
+                };
+                body.push_str(&format!("  --b{}: {extract};\n", i + 1));
+            }
+            let terms: Vec<String> = (0..bits).map(|i| {
+                let j = i + 1;
+                let coeff = 1u64 << i;
+                let bit_expr = match op {
+                    "and" => format!("var(--a{j}) * var(--b{j})"),
+                    "or"  => format!("min(1, calc(var(--a{j}) + var(--b{j})))"),
+                    "xor" => format!("calc(min(1, calc(var(--a{j}) + var(--b{j}))) - var(--a{j}) * var(--b{j}))"),
+                    _ => unreachable!(),
+                };
+                if i == 0 { bit_expr } else { format!("{bit_expr} * {coeff}") }
+            }).collect();
+            body.push_str("  result: calc(\n");
+            for (idx, term) in terms.iter().enumerate() {
+                let sep = if idx < terms.len() - 1 { " +" } else { "" };
+                body.push_str(&format!("    {term}{sep}\n"));
+            }
+            body.push_str("  );\n");
+            format!("@function --veryl-b{op}{suffix}(--a <integer>, --b <integer>) returns <integer> {{\n{body}}}\n\n")
+        }
+    }
 }
 
 fn css_property(var: &str) -> String {
@@ -469,23 +636,19 @@ fn variable_css_name(variable: &Variable, module_name: &str) -> Result<Option<St
     })
 }
 
-fn ensure_supported_int_type(variable: &Variable) -> Result<()> {
+fn parse_type_info(variable: &Variable) -> Result<TypeInfo> {
     let ty = variable.r#type.to_string();
-    const SUPPORTED: &[&str] = &[
-        "signed bit<8>",
-        "signed bit<16>",
-        "signed bit<32>",
-        "bit<8>",
-        "bit<16>",
-    ];
-    if SUPPORTED.contains(&ty.as_str()) {
-        Ok(())
-    } else {
-        bail!(
+    match ty.as_str() {
+        "signed bit<8>"  => Ok(TypeInfo { width: 8,  signed: true }),
+        "signed bit<16>" => Ok(TypeInfo { width: 16, signed: true }),
+        "signed bit<32>" => Ok(TypeInfo { width: 32, signed: true }),
+        "bit<8>"         => Ok(TypeInfo { width: 8,  signed: false }),
+        "bit<16>"        => Ok(TypeInfo { width: 16, signed: false }),
+        _ => bail!(
             "unsupported type `{}` for `{}`; supported: i8, i16, i32, u8, u16",
             ty,
             variable.path
-        )
+        ),
     }
 }
 
@@ -517,7 +680,6 @@ fn literal_to_css_int(text: &str) -> Result<String> {
 
         let value: i128 = if signed {
             if let Some(w) = width.filter(|&w| w > 0 && w <= 128) {
-                // sign-extend: MSB within `w` bits determines sign
                 if (unsigned_val >> (w - 1)) & 1 == 1 {
                     (unsigned_val | (u128::MAX << w)) as i128
                 } else {
