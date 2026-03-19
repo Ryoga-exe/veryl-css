@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>BitOps (u8 bitwise)</title>
+    <link href="output.css" rel="stylesheet" />
+    <style>
+      #and_out::before { counter-reset: v var(--and_out); content: "a & b = " counter(v); }
+      #or_out::before  { counter-reset: v var(--or_out);  content: "a | b = " counter(v); }
+      #xor_out::before { counter-reset: v var(--xor_out); content: "a ^ b = " counter(v); }
+      #not_out::before { counter-reset: v var(--not_out); content: "~a    = " counter(v); }
+      #shl_out::before { counter-reset: v var(--shl_out); content: "a << b = " counter(v); }
+      #shr_out::before { counter-reset: v var(--shr_out); content: "a >> b = " counter(v); }
+    </style>
+  </head>
+  <body>
+    <label>a (0–255): <input type="range" min="0" max="255" value="60" oninput="set('--a', this)" /> <span id="va">60</span></label><br />
+    <label>b (0–7):   <input type="range" min="0" max="7"   value="3"  oninput="set('--b', this)" /> <span id="vb">3</span></label><br />
+    <p id="and_out"></p>
+    <p id="or_out"></p>
+    <p id="xor_out"></p>
+    <p id="not_out"></p>
+    <p id="shl_out"></p>
+    <p id="shr_out"></p>
+    <script>
+      function set(prop, el) {
+        document.documentElement.style.setProperty(prop, el.value);
+        document.getElementById('v' + prop.replace('--', '')).textContent = el.value;
+      }
+      document.documentElement.style.setProperty('--a', '60');
+      document.documentElement.style.setProperty('--b', '3');
+    </script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+module BitOps (
+    a  : input  u8,
+    b  : input  u8,
+    and_out : output u8,
+    or_out  : output u8,
+    xor_out : output u8,
+    not_out : output u8,
+    shl_out : output u8,
+    shr_out : output u8,
+) {
+    always_comb {
+        and_out = a & b;
+        or_out  = a | b;
+        xor_out = a ^ b;
+        not_out = ~a;
+        shl_out = a << b;
+        shr_out = a >> b;
+    }
+}
