@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use veryl_analyzer::ir::{
     AssignDestination, AssignStatement, Component, Declaration, Expression, Factor,
@@ -13,7 +13,13 @@ pub fn emit(ir: &Ir) -> Result<Output> {
     let modules: Vec<&Module> = ir
         .components
         .iter()
-        .filter_map(|c| if let Component::Module(m) = c { Some(m) } else { None })
+        .filter_map(|c| {
+            if let Component::Module(m) = c {
+                Some(m)
+            } else {
+                None
+            }
+        })
         .collect();
     match modules.as_slice() {
         [module] => emit_module(module),
@@ -61,10 +67,30 @@ impl<'a> Ctx<'a> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum CompFn { Lt, Lte, Gt, Gte, Eq, Neq }
+enum CompFn {
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    Eq,
+    Neq,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum BitFn { And8, And16, Or8, Or16, Xor8, Xor16, Not8, Not16, Shl8, Shl16, Shr8, Shr16 }
+enum BitFn {
+    And8,
+    And16,
+    Or8,
+    Or16,
+    Xor8,
+    Xor16,
+    Not8,
+    Not16,
+    Shl8,
+    Shl16,
+    Shr8,
+    Shr16,
+}
 
 fn emit_module(module: &Module) -> Result<Output> {
     let module_name = module.name.to_string();
@@ -105,19 +131,24 @@ fn emit_module(module: &Module) -> Result<Output> {
         if ff_assigned_ids.contains(&id) && !is_reset {
             let signal = last_path_segment(&variable.path.to_string())?;
             let base = format!("--{module_name}-{signal}");
-            ff_regs.insert(id, FfRegInfo {
-                current: css_name.clone(),
-                next: format!("{base}-next"),
-                captured: format!("{base}-captured"),
-                hoist: format!("{base}-hoist"),
-            });
+            ff_regs.insert(
+                id,
+                FfRegInfo {
+                    current: css_name.clone(),
+                    next: format!("{base}-next"),
+                    captured: format!("{base}-captured"),
+                    hoist: format!("{base}-hoist"),
+                },
+            );
         }
         names.insert(id, css_name.clone());
         public_css_vars.insert(css_name);
     }
 
-    let ff_next_names: BTreeMap<VarId, String> =
-        ff_regs.iter().map(|(id, i)| (*id, i.next.clone())).collect();
+    let ff_next_names: BTreeMap<VarId, String> = ff_regs
+        .iter()
+        .map(|(id, i)| (*id, i.next.clone()))
+        .collect();
 
     let mut ctx = Ctx::new(&names, &types);
     let mut ff_current_lines = Vec::<String>::new();
@@ -167,7 +198,10 @@ fn emit_module(module: &Module) -> Result<Output> {
     }
 
     if has_ff {
-        let body_lines = ff_current_lines.iter().chain(&comb_lines).chain(&ff_next_lines);
+        let body_lines = ff_current_lines
+            .iter()
+            .chain(&comb_lines)
+            .chain(&ff_next_lines);
         css.push_str(&css_block("body", body_lines));
 
         let mut hoist_inner = Vec::<String>::new();
@@ -246,8 +280,11 @@ fn emit_if_reset(
     let normal_exprs = eval_branch(&if_reset.false_side, ctx, &mut preamble)?;
     out.extend(preamble);
 
-    let all_ids: BTreeSet<VarId> =
-        reset_exprs.keys().chain(normal_exprs.keys()).cloned().collect();
+    let all_ids: BTreeSet<VarId> = reset_exprs
+        .keys()
+        .chain(normal_exprs.keys())
+        .cloned()
+        .collect();
 
     for id in all_ids {
         let next = ff_next_names
@@ -255,9 +292,9 @@ fn emit_if_reset(
             .ok_or_else(|| anyhow!("if_reset assigns to non-ff variable: {id}"))?;
         let line = match (reset_exprs.get(&id), normal_exprs.get(&id)) {
             (Some(rv), Some(nv)) => format!("{next}: if(style(--rst: 1): {rv}; else: {nv});"),
-            (Some(rv), None)     => format!("{next}: {rv};"),
-            (None, Some(nv))     => format!("{next}: {nv};"),
-            (None, None)         => unreachable!(),
+            (Some(rv), None) => format!("{next}: {rv};"),
+            (None, Some(nv)) => format!("{next}: {nv};"),
+            (None, None) => unreachable!(),
         };
         out.push(line);
     }
@@ -296,27 +333,32 @@ fn eval_if_expr(
     let true_exprs = eval_branch(&if_stmt.true_side, ctx, preamble)?;
     let false_exprs = eval_branch(&if_stmt.false_side, ctx, preamble)?;
 
-    let all_ids: BTreeSet<VarId> =
-        true_exprs.keys().chain(false_exprs.keys()).cloned().collect();
+    let all_ids: BTreeSet<VarId> = true_exprs
+        .keys()
+        .chain(false_exprs.keys())
+        .cloned()
+        .collect();
 
-    all_ids.into_iter().map(|id| {
-        let t = true_exprs.get(&id)
-            .ok_or_else(|| anyhow!("variable {id} not assigned in true branch"))?;
-        let f = false_exprs.get(&id)
-            .ok_or_else(|| anyhow!("variable {id} not assigned in false branch"))?;
-        Ok((id, format!("if(style({cond_var}: 1): {t}; else: {f})")))
-    }).collect()
+    all_ids
+        .into_iter()
+        .map(|id| {
+            let t = true_exprs
+                .get(&id)
+                .ok_or_else(|| anyhow!("variable {id} not assigned in true branch"))?;
+            let f = false_exprs
+                .get(&id)
+                .ok_or_else(|| anyhow!("variable {id} not assigned in false branch"))?;
+            Ok((id, format!("if(style({cond_var}: 1): {t}; else: {f})")))
+        })
+        .collect()
 }
 
-fn emit_comb_statement(
-    statement: &Statement,
-    ctx: &mut Ctx,
-    out: &mut Vec<String>,
-) -> Result<()> {
+fn emit_comb_statement(statement: &Statement, ctx: &mut Ctx, out: &mut Vec<String>) -> Result<()> {
     match statement {
         Statement::Assign(assign) => {
             let (dst, expr) = unpack_assign_expr(assign, ctx)?;
-            let dst_name = ctx.names
+            let dst_name = ctx
+                .names
                 .get(&dst.id)
                 .ok_or_else(|| anyhow!("unknown assignment destination: {}", dst.id))?;
             out.push(format!("{dst_name}: {expr};"));
@@ -327,7 +369,8 @@ fn emit_comb_statement(
             let vals = eval_if_expr(if_stmt, ctx, &mut preamble)?;
             out.extend(preamble);
             for (id, expr) in vals {
-                let dst_name = ctx.names
+                let dst_name = ctx
+                    .names
                     .get(&id)
                     .ok_or_else(|| anyhow!("unknown variable in if branch: {id}"))?;
                 out.push(format!("{dst_name}: {expr};"));
@@ -344,20 +387,26 @@ fn emit_condition(expr: &Expression, ctx: &mut Ctx) -> Result<String> {
         Expression::Unary(Op::LogicNot, inner, _) => {
             Ok(format!("calc(1 - ({}))", emit_condition(inner, ctx)?))
         }
-        Expression::Binary(lhs, Op::LogicAnd, rhs, _) => {
-            Ok(format!("min({}, {})", emit_condition(lhs, ctx)?, emit_condition(rhs, ctx)?))
-        }
-        Expression::Binary(lhs, Op::LogicOr, rhs, _) => {
-            Ok(format!("max({}, {})", emit_condition(lhs, ctx)?, emit_condition(rhs, ctx)?))
-        }
+        Expression::Binary(lhs, Op::LogicAnd, rhs, _) => Ok(format!(
+            "min({}, {})",
+            emit_condition(lhs, ctx)?,
+            emit_condition(rhs, ctx)?
+        )),
+        Expression::Binary(lhs, Op::LogicOr, rhs, _) => Ok(format!(
+            "max({}, {})",
+            emit_condition(lhs, ctx)?,
+            emit_condition(rhs, ctx)?
+        )),
         Expression::Binary(lhs, op, rhs, _) => {
             let (fn_name, comp) = match op {
-                Op::Less      => ("--veryl-lt",  CompFn::Lt),
-                Op::LessEq    => ("--veryl-lte", CompFn::Lte),
-                Op::Greater   => ("--veryl-gt",  CompFn::Gt),
+                Op::Less => ("--veryl-lt", CompFn::Lt),
+                Op::LessEq => ("--veryl-lte", CompFn::Lte),
+                Op::Greater => ("--veryl-gt", CompFn::Gt),
                 Op::GreaterEq => ("--veryl-gte", CompFn::Gte),
-                Op::Eq        => ("--veryl-eq",  CompFn::Eq),
-                Op::Ne        => ("--veryl-neq", CompFn::Neq),
+                Op::Eq => ("--veryl-eq", CompFn::Eq),
+                Op::EqWildcard => ("--veryl-eq", CompFn::Eq), // case ==? : no X/Z, treat as ==
+                Op::Ne => ("--veryl-neq", CompFn::Neq),
+                Op::NeWildcard => ("--veryl-neq", CompFn::Neq), // case !=? : no X/Z, treat as !=
                 _ => bail!("unsupported condition operator: {op}"),
             };
             ctx.used_comp_fns.insert(comp);
@@ -384,9 +433,9 @@ fn emit_expr(expr: &Expression, ctx: &mut Ctx) -> Result<(String, Option<TypeInf
                         bail!("bitwise NOT is only supported for unsigned types (u8, u16)");
                     }
                     let (fn_name, bit_fn) = match ti.width {
-                        8  => ("--veryl-bnot8",  BitFn::Not8),
+                        8 => ("--veryl-bnot8", BitFn::Not8),
                         16 => ("--veryl-bnot16", BitFn::Not16),
-                        w  => bail!("bitwise NOT unsupported for {w}-bit type"),
+                        w => bail!("bitwise NOT unsupported for {w}-bit type"),
                     };
                     ctx.used_bit_fns.insert(bit_fn);
                     Ok((format!("{fn_name}({inner_css})"), Some(ti)))
@@ -406,11 +455,11 @@ fn emit_expr(expr: &Expression, ctx: &mut Ctx) -> Result<(String, Option<TypeInf
                         bail!("bitwise AND/OR/XOR is only supported for unsigned types (u8, u16)");
                     }
                     let (fn_name, bit_fn) = match (op, ti.width) {
-                        (Op::BitAnd, 8)  => ("--veryl-band8",  BitFn::And8),
+                        (Op::BitAnd, 8) => ("--veryl-band8", BitFn::And8),
                         (Op::BitAnd, 16) => ("--veryl-band16", BitFn::And16),
-                        (Op::BitOr,  8)  => ("--veryl-bor8",   BitFn::Or8),
-                        (Op::BitOr,  16) => ("--veryl-bor16",  BitFn::Or16),
-                        (Op::BitXor, 8)  => ("--veryl-bxor8",  BitFn::Xor8),
+                        (Op::BitOr, 8) => ("--veryl-bor8", BitFn::Or8),
+                        (Op::BitOr, 16) => ("--veryl-bor16", BitFn::Or16),
+                        (Op::BitXor, 8) => ("--veryl-bxor8", BitFn::Xor8),
                         (Op::BitXor, 16) => ("--veryl-bxor16", BitFn::Xor16),
                         (_, w) => bail!("bitwise op unsupported for {w}-bit type"),
                     };
@@ -424,9 +473,9 @@ fn emit_expr(expr: &Expression, ctx: &mut Ctx) -> Result<(String, Option<TypeInf
                         bail!("logical shifts are only supported for unsigned types (u8, u16)");
                     }
                     let (fn_name, bit_fn) = match (op, ti.width) {
-                        (Op::LogicShiftL, 8)  => ("--veryl-bshl8",  BitFn::Shl8),
+                        (Op::LogicShiftL, 8) => ("--veryl-bshl8", BitFn::Shl8),
                         (Op::LogicShiftL, 16) => ("--veryl-bshl16", BitFn::Shl16),
-                        (Op::LogicShiftR, 8)  => ("--veryl-bshr8",  BitFn::Shr8),
+                        (Op::LogicShiftR, 8) => ("--veryl-bshr8", BitFn::Shr8),
                         (Op::LogicShiftR, 16) => ("--veryl-bshr16", BitFn::Shr16),
                         (_, w) => bail!("shift unsupported for {w}-bit type"),
                     };
@@ -452,7 +501,8 @@ fn emit_factor(factor: &Factor, ctx: &mut Ctx) -> Result<(String, Option<TypeInf
             if !select.to_string().is_empty() {
                 bail!("bit/part-select is unsupported");
             }
-            let css_name = ctx.names
+            let css_name = ctx
+                .names
                 .get(id)
                 .ok_or_else(|| anyhow!("unknown variable id: {id}"))?;
             let ti = ctx.types.get(id).copied();
@@ -501,12 +551,36 @@ fn unpack_assign_expr<'a>(
 
 fn css_comp_functions(used: &BTreeSet<CompFn>) -> String {
     let all: &[(CompFn, &str, &str)] = &[
-        (CompFn::Lt,  "--veryl-lt",  "clamp(0, sign(calc(var(--b) - var(--a))), 1)"),
-        (CompFn::Lte, "--veryl-lte", "clamp(0, calc(1 + sign(calc(var(--b) - var(--a)))), 1)"),
-        (CompFn::Gt,  "--veryl-gt",  "clamp(0, sign(calc(var(--a) - var(--b))), 1)"),
-        (CompFn::Gte, "--veryl-gte", "clamp(0, calc(1 + sign(calc(var(--a) - var(--b)))), 1)"),
-        (CompFn::Eq,  "--veryl-eq",  "clamp(0, calc(1 - abs(sign(calc(var(--a) - var(--b))))), 1)"),
-        (CompFn::Neq, "--veryl-neq", "abs(sign(calc(var(--a) - var(--b))))"),
+        (
+            CompFn::Lt,
+            "--veryl-lt",
+            "clamp(0, sign(calc(var(--b) - var(--a))), 1)",
+        ),
+        (
+            CompFn::Lte,
+            "--veryl-lte",
+            "clamp(0, calc(1 + sign(calc(var(--b) - var(--a)))), 1)",
+        ),
+        (
+            CompFn::Gt,
+            "--veryl-gt",
+            "clamp(0, sign(calc(var(--a) - var(--b))), 1)",
+        ),
+        (
+            CompFn::Gte,
+            "--veryl-gte",
+            "clamp(0, calc(1 + sign(calc(var(--a) - var(--b)))), 1)",
+        ),
+        (
+            CompFn::Eq,
+            "--veryl-eq",
+            "clamp(0, calc(1 - abs(sign(calc(var(--a) - var(--b))))), 1)",
+        ),
+        (
+            CompFn::Neq,
+            "--veryl-neq",
+            "abs(sign(calc(var(--a) - var(--b))))",
+        ),
     ];
     let mut s = String::new();
     for (tag, name, body) in all {
@@ -521,17 +595,17 @@ fn css_comp_functions(used: &BTreeSet<CompFn>) -> String {
 
 fn css_bit_functions(used: &BTreeSet<BitFn>) -> String {
     let all: &[(BitFn, u32, &str)] = &[
-        (BitFn::And8,  8,  "and"),
+        (BitFn::And8, 8, "and"),
         (BitFn::And16, 16, "and"),
-        (BitFn::Or8,   8,  "or"),
-        (BitFn::Or16,  16, "or"),
-        (BitFn::Xor8,  8,  "xor"),
+        (BitFn::Or8, 8, "or"),
+        (BitFn::Or16, 16, "or"),
+        (BitFn::Xor8, 8, "xor"),
         (BitFn::Xor16, 16, "xor"),
-        (BitFn::Not8,  8,  "not"),
+        (BitFn::Not8, 8, "not"),
         (BitFn::Not16, 16, "not"),
-        (BitFn::Shl8,  8,  "shl"),
+        (BitFn::Shl8, 8, "shl"),
         (BitFn::Shl16, 16, "shl"),
-        (BitFn::Shr8,  8,  "shr"),
+        (BitFn::Shr8, 8, "shr"),
         (BitFn::Shr16, 16, "shr"),
     ];
     let mut s = String::new();
@@ -602,7 +676,9 @@ fn css_bit_function_body(bits: u32, op: &str) -> String {
                 body.push_str(&format!("    {term}{sep}\n"));
             }
             body.push_str("  );\n");
-            format!("@function --veryl-b{op}{suffix}(--a <integer>, --b <integer>) returns <integer> {{\n{body}}}\n\n")
+            format!(
+                "@function --veryl-b{op}{suffix}(--a <integer>, --b <integer>) returns <integer> {{\n{body}}}\n\n"
+            )
         }
     }
 }
@@ -623,7 +699,11 @@ fn css_block<'a>(selector: &str, lines: impl IntoIterator<Item = &'a String>) ->
 }
 
 fn css_keyframes(name: &str, lines: &[String]) -> String {
-    let inner = lines.iter().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n");
+    let inner = lines
+        .iter()
+        .map(|l| format!("    {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!("@keyframes {name} {{\n  0%, 100% {{\n{inner}\n  }}\n}}\n\n")
 }
 
@@ -639,11 +719,26 @@ fn variable_css_name(variable: &Variable, module_name: &str) -> Result<Option<St
 fn parse_type_info(variable: &Variable) -> Result<TypeInfo> {
     let ty = variable.r#type.to_string();
     match ty.as_str() {
-        "signed bit<8>"  => Ok(TypeInfo { width: 8,  signed: true }),
-        "signed bit<16>" => Ok(TypeInfo { width: 16, signed: true }),
-        "signed bit<32>" => Ok(TypeInfo { width: 32, signed: true }),
-        "bit<8>"         => Ok(TypeInfo { width: 8,  signed: false }),
-        "bit<16>"        => Ok(TypeInfo { width: 16, signed: false }),
+        "signed bit<8>" => Ok(TypeInfo {
+            width: 8,
+            signed: true,
+        }),
+        "signed bit<16>" => Ok(TypeInfo {
+            width: 16,
+            signed: true,
+        }),
+        "signed bit<32>" => Ok(TypeInfo {
+            width: 32,
+            signed: true,
+        }),
+        "bit<8>" => Ok(TypeInfo {
+            width: 8,
+            signed: false,
+        }),
+        "bit<16>" => Ok(TypeInfo {
+            width: 16,
+            signed: false,
+        }),
         _ => bail!(
             "unsupported type `{}` for `{}`; supported: i8, i16, i32, u8, u16",
             ty,
@@ -653,7 +748,10 @@ fn parse_type_info(variable: &Variable) -> Result<TypeInfo> {
 }
 
 fn last_path_segment(path: &str) -> Result<String> {
-    path.rsplit('.').next().map(|s| s.to_string()).ok_or_else(|| anyhow!("empty path"))
+    path.rsplit('.')
+        .next()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("empty path"))
 }
 
 // Parse a Veryl literal (e.g. "32'sh00000001") or plain decimal into a CSS integer string.
