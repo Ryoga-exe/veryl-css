@@ -1,0 +1,41 @@
+module seg7 (
+    d0 : input  u8,
+    d1 : input  u8,
+    d2 : input  u8,
+    d3 : input  u8,
+    out: output u8,
+    s0 : output u8,
+    s1 : output u8,
+    s2 : output u8,
+    s3 : output u8,
+    s4 : output u8,
+    s5 : output u8,
+    s6 : output u8,
+) {
+    var data: u8;
+    var seg: u8;
+    always_comb {
+        data = 8 * d0 + 4 * d1 + 2 * d2 + 1 * d3;
+        out = data;
+        case data {
+            0      : seg = 8'b0111111;
+            1      : seg = 8'b0000110;
+            2      : seg = 8'b1011011;
+            3      : seg = 8'b1001111;
+            4      : seg = 8'b1100110;
+            5      : seg = 8'b1101101;
+            6      : seg = 8'b1111101;
+            7      : seg = 8'b0000111;
+            8      : seg = 8'b1111111;
+            9      : seg = 8'b1101111;
+            default: seg = 0;
+        }
+        s0 = seg[0];
+        s1 = seg[1];
+        s2 = seg[2];
+        s3 = seg[3];
+        s4 = seg[4];
+        s5 = seg[5];
+        s6 = seg[6];
+    }
+}

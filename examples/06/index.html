@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title></title>
+    <link href="output.css" rel="stylesheet" />
+    <style>
+      :root:has(input[id="a"]:checked) {
+        --d0: 1;
+      }
+      :root:has(input[id="b"]:checked) {
+        --d1: 1;
+      }
+      :root:has(input[id="c"]:checked) {
+        --d2: 1;
+      }
+      :root:has(input[id="d"]:checked) {
+        --d3: 1;
+      }
+      .out::after {
+        counter-reset: val var(--out);
+        content: counter(val);
+      }
+
+      .in {
+        display: grid;
+        grid-template: repeat(2, 2rem) / repeat(4, 2rem);
+        justify-content: center;
+        justify-items: center;
+
+        > label {
+          font-size: 1.5rem;
+          cursor: pointer;
+        }
+        > input {
+          width: 1.5rem;
+          cursor: pointer;
+        }
+      }
+      .out {
+        text-align: center;
+        font-size: 2rem;
+      }
+      @function --fill(--val) {
+        result: rgba(
+          calc(255 * var(--val)),
+          0,
+          0,
+          calc((1 + 4 * var(--val)) / 5)
+        );
+      }
+      .seg {
+        width: 1px;
+        margin: 2rem auto;
+        position: relative;
+        span {
+          position: absolute;
+          display: block;
+          background: black;
+          border-radius: 15px;
+          transform: translate(-50%, -50%);
+          left: 0;
+          width: 20px;
+          height: 100px;
+        }
+        span:nth-child(1) {
+          width: 100px;
+          height: 20px;
+          top: 0;
+          background: --fill(var(--s0));
+        }
+        span:nth-child(2) {
+          top: 50px;
+          left: 50px;
+          background: --fill(var(--s1));
+        }
+        span:nth-child(3) {
+          top: 150px;
+          left: 50px;
+          background: --fill(var(--s2));
+        }
+        span:nth-child(4) {
+          width: 100px;
+          height: 20px;
+          top: 200px;
+          background: --fill(var(--s3));
+        }
+        span:nth-child(5) {
+          top: 150px;
+          left: -50px;
+          background: --fill(var(--s4));
+        }
+        span:nth-child(6) {
+          top: 50px;
+          left: -50px;
+          background: --fill(var(--s5));
+        }
+        span:nth-child(7) {
+          width: 100px;
+          height: 20px;
+          top: 100px;
+          background: --fill(var(--s6));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="in">
+      <label for="a">8</label>
+      <label for="b">4</label>
+      <label for="c">2</label>
+      <label for="d">1</label>
+      <input id="a" type="checkbox" />
+      <input id="b" type="checkbox" />
+      <input id="c" type="checkbox" />
+      <input id="d" type="checkbox" />
+    </div>
+    <div class="out"></div>
+    <div class="seg">
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+  </body>
+</html>
