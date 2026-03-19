@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Clamp (always_comb)</title>
+    <link href="output.css" rel="stylesheet" />
+    <style>
+      #out::before {
+        counter-reset: out var(--out);
+        content: "out = " counter(out);
+      }
+    </style>
+  </head>
+  <body>
+    <label>x:  <input type="range" min="-10" max="10" value="5"  oninput="set('--x',  this)" /> <span id="vx">5</span></label><br />
+    <label>lo: <input type="range" min="-10" max="10" value="-3" oninput="set('--lo', this)" /> <span id="vlo">-3</span></label><br />
+    <label>hi: <input type="range" min="-10" max="10" value="7"  oninput="set('--hi', this)" /> <span id="vhi">7</span></label><br />
+    <p id="out"></p>
+    <script>
+      function set(prop, el) {
+        document.documentElement.style.setProperty(prop, el.value);
+        document.getElementById('v' + prop.replace('--', '')).textContent = el.value;
+      }
+      document.documentElement.style.setProperty('--x',   '5');
+      document.documentElement.style.setProperty('--lo', '-3');
+      document.documentElement.style.setProperty('--hi',  '7');
+    </script>
+  </body>
+</html>

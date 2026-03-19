@@ -1,0 +1,18 @@
+module Clamp (
+    x  : input  i32,
+    lo : input  i32,
+    hi : input  i32,
+    out: output i32,
+) {
+    always_comb {
+        if x <: lo {
+            out = lo;
+        } else {
+            if x >: hi {
+                out = hi;
+            } else {
+                out = x;
+            }
+        }
+    }
+}
