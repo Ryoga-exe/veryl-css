@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use std::collections::{BTreeMap, BTreeSet};
 use veryl_analyzer::ir::{
     AssignDestination, AssignStatement, Component, Declaration, Expression, Factor,
@@ -763,13 +763,13 @@ fn parse_type_info(variable: &Variable) -> Result<TypeInfo> {
 // For a constant bit-index expression, return 2^i as the divisor (1 if i==0).
 // Returns None if the index is not a compile-time integer literal.
 fn const_bit_divisor(expr: &Expression) -> Option<u64> {
-    if let Expression::Term(factor) = expr {
-        if let Factor::Value(comptime) = factor.as_ref() {
-            let val = comptime.get_value().ok()?;
-            let s = literal_to_css_int(&format!("{val:x}")).ok()?;
-            let i: u32 = s.parse().ok()?;
-            return Some(1u64 << i);
-        }
+    if let Expression::Term(factor) = expr
+        && let Factor::Value(comptime) = factor.as_ref()
+    {
+        let val = comptime.get_value().ok()?;
+        let s = literal_to_css_int(&format!("{val:x}")).ok()?;
+        let i: u32 = s.parse().ok()?;
+        return Some(1u64 << i);
     }
     None
 }
